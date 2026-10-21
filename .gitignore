@@ -1,0 +1,6 @@
+.build/
+build/
+.swiftpm/
+.DS_Store
+# HAR captures contain auth tokens and personal data
+*.har
