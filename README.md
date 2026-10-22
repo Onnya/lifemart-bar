@@ -32,9 +32,14 @@
 Нужны macOS 14+ и Swift 6 (хватит Command Line Tools, Xcode не обязателен).
 
 ```sh
+./scripts/make-signing-cert.sh   # один раз
 ./scripts/bundle.sh
 open build/LifemartBar.app
 ```
+
+`make-signing-cert.sh` создаёт самоподписанный сертификат в отдельной связке ключей `lifemartbar-signing` (в системе ему не нужно доверять). Сборки, подписанные им, macOS считает одним и тем же приложением, поэтому доступ к токену в связке ключей не нужно подтверждать после каждой пересборки. Без сертификата `bundle.sh` подписывает сборку одноразовой подписью.
+
+Иконка приложения рисуется кодом в `scripts/make-icon.swift`; после правок пересоберите `Resources/AppIcon.icns` командой `./scripts/make-icon.sh`.
 
 Чтобы приложение было в «Программах», скопируйте `build/LifemartBar.app` в `/Applications`.
 
