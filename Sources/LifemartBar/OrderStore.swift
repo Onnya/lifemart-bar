@@ -1,53 +1,112 @@
 import Foundation
 import Combine
 
-/// Holds the order the menu shows. Until the API client exists it serves
-/// mock orders that the demo submenu switches between.
+/// Polls lifemart.ru for the current order and tracks how its status changes.
 @MainActor
 final class OrderStore: ObservableObject {
+    enum Problem: Equatable {
+        case needsCredentials
+        case unauthorized
+        case offline
+        case serverError(Int)
+        case unreadable
+    }
+
     @Published private(set) var order: Order?
     @Published private(set) var lastOrder: Order?
+    @Published private(set) var statusChangedAt: Date?
+    @Published private(set) var problem: Problem?
     @Published private(set) var now = Date()
 
-    private var ticker: AnyCancellable?
+    /// A finished order stays in the menu bar this long before the icon goes idle.
+    private let finishedOrderLinger: TimeInterval = 15 * 60
+    private var finishedAt: Date?
+    private var loadedOnce = false
+    private var poller: Task<Void, Never>?
+    private let notifier = Notifier()
 
     init() {
-        lastOrder = Self.mock(stage: .delivered, minutesAgo: 26 * 60)
-        showDemo(.onTheWay)
-        ticker = Timer.publish(every: 30, on: .main, in: .common)
-            .autoconnect()
-            .sink { [weak self] in self?.now = $0 }
+        poller = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                await self.refresh()
+                let tracking = self.order.map { !$0.stage.isFinal } ?? false
+                try? await Task.sleep(for: .seconds(tracking ? 30 : 60))
+            }
+        }
     }
 
-    var symbol: String { order?.stage.symbol ?? "fork.knife" }
+    var symbol: String {
+        if problem == .unauthorized { return "exclamationmark.triangle" }
+        return order?.stage.symbol ?? "fork.knife"
+    }
 
-    func refresh() {
+    func refresh() async {
         now = Date()
+        guard let token = Credentials.token, let apiKey = Credentials.apiKey else {
+            problem = .needsCredentials
+            order = nil
+            return
+        }
+        let api = LifemartAPI(token: token, apiKey: apiKey)
+        do {
+            let active = try await api.activeOrders().max { $0.createdAt < $1.createdAt }
+            apply(active)
+            if order == nil && lastOrder == nil {
+                lastOrder = try await api.lastOrder()
+            }
+            problem = nil
+        } catch LifemartAPI.Failure.unauthorized {
+            problem = .unauthorized
+        } catch LifemartAPI.Failure.badResponse(let status) {
+            NSLog("LifemartBar: HTTP %d", status)
+            problem = .serverError(status)
+        } catch let error as DecodingError {
+            NSLog("LifemartBar: unreadable response: %@", String(describing: error))
+            problem = .unreadable
+        } catch {
+            NSLog("LifemartBar: request failed: %@", String(describing: error))
+            problem = .offline
+        }
+        loadedOnce = true
     }
 
-    func showDemo(_ stage: OrderStage?) {
-        order = stage.map { Self.mock(stage: $0, minutesAgo: 23) }
-        now = Date()
+    func saveCredentials(token: String, apiKey: String) {
+        Credentials.token = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        Credentials.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task { await refresh() }
     }
 
-    private static func mock(stage: OrderStage, minutesAgo: Double) -> Order {
-        let created = Date().addingTimeInterval(-minutesAgo * 60)
-        let pickup = stage == .readyForPickup
-        return Order(
-            code: "C02",
-            stage: stage,
-            createdAt: created,
-            statusChangedAt: Date().addingTimeInterval(-4 * 60),
-            storeAddress: "Жизньмарт, ул. Ленина, 10",
-            kind: pickup ? .pickup : .delivery(address: "ул. Мира, 5, кв. 12"),
-            items: [
-                OrderItem(name: "Боул с курицей терияки", quantity: 1, price: 390),
-                OrderItem(name: "Морс клюквенный 0,5 л", quantity: 2, price: 180),
-                OrderItem(name: "Сырники со сметаной", quantity: 1, price: 290),
-                OrderItem(name: "Салат «Цезарь»", quantity: 1, price: 380),
-            ],
-            total: 1240,
-            paymentTitle: "оплачено картой"
-        )
+    private func apply(_ active: Order?) {
+        if let active {
+            if active.id != order?.id || active.stage != order?.stage {
+                statusChangedAt = now
+                if loadedOnce { notifier.post(active) }
+            }
+            order = active
+            finishedAt = active.stage.isFinal ? (finishedAt ?? now) : nil
+            return
+        }
+
+        // The order left the incomplete list: it was delivered or handed over.
+        if var current = order, !current.stage.isFinal {
+            if case .pickup = current.kind {
+                current.stage = .readyForPickup
+                current.statusText = "Можно забирать"
+            } else {
+                current.stage = .delivered
+                current.statusText = "Приятного аппетита!"
+            }
+            order = current
+            statusChangedAt = now
+            finishedAt = now
+            notifier.post(current)
+        }
+
+        if let finishedAt, now.timeIntervalSince(finishedAt) > finishedOrderLinger {
+            lastOrder = order
+            order = nil
+            self.finishedAt = nil
+        }
     }
 }
