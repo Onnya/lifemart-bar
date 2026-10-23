@@ -23,7 +23,7 @@ final class OrderStore: ObservableObject {
     private var finishedAt: Date?
     private var loadedOnce = false
     private var poller: Task<Void, Never>?
-    private let notifier = Notifier()
+    let notifier = Notifier()
 
     init() {
         poller = Task { [weak self] in

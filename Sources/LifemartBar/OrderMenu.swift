@@ -41,6 +41,11 @@ struct OrderMenu: View {
 
         Menu("Настройки") {
             Toggle("Уведомления о статусе", isOn: $notificationsEnabled)
+            if store.notifier.isBlocked {
+                Button("Разрешить уведомления в macOS…") { store.notifier.openSystemSettings() }
+            } else {
+                Button("Тестовое уведомление") { store.notifier.sendTest() }
+            }
             Button("Ввести токен…") {
                 CredentialsPrompt.run(onSave: store.saveCredentials)
             }
